@@ -45,7 +45,7 @@ export const getCurrentUser = async (): Promise<ServerActionResponse<UserInfo>> 
         };
       } catch (e) {
         // If we can't parse the principal, fall back to unauthenticated
-        console.warn("Failed to parse X-MS-CLIENT-PRINCIPAL header:", e);
+        console.warn("Failed to parse X-MS-CLIENT-PRINCIPAL header:", formatResponseError(e));
       }
     }
     
