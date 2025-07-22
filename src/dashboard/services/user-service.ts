@@ -136,7 +136,7 @@ export const getUserTeamMemberships = async (
         // 404 means no membership, which is expected for teams the user isn't in
       } catch (e) {
         // Continue checking other teams if one fails
-        console.warn(`Failed to check membership for team ${team.slug}:`, e);
+        console.warn(`Failed to check membership for team ${team.slug}: ${e.message}`);
       }
     }
 
