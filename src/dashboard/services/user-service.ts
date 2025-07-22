@@ -33,13 +33,13 @@ export const getCurrentUser = async (): Promise<ServerActionResponse<UserInfo>> 
       try {
         // Decode the base64 encoded user principal
         const decodedPrincipal = Buffer.from(clientPrincipal, "base64").toString("utf8");
-        const userPrincipal = JSON.parse(decodedPrincipal);
+        const userPrincipal: { userDetails?: string; claims?: UserPrincipalClaim[] } = JSON.parse(decodedPrincipal);
         
         return {
           status: "OK",
           response: {
-            username: userPrincipal.userDetails || userPrincipal.claims?.find((c: any) => c.typ === "preferred_username")?.val || "unknown",
-            email: userPrincipal.claims?.find((c: any) => c.typ === "email")?.val,
+            username: userPrincipal.userDetails || userPrincipal.claims?.find((c: UserPrincipalClaim) => c.typ === "preferred_username")?.val || "unknown",
+            email: userPrincipal.claims?.find((c: UserPrincipalClaim) => c.typ === "email")?.val,
             isAuthenticated: true,
           },
         };
