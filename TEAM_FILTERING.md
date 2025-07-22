@@ -26,9 +26,45 @@ This implementation adds user-based team filtering to the GitHub Copilot Metrics
 ## How It Works
 
 1. **User Detection**: Dashboard page calls `getCurrentUser()` to check for authentication
-2. **Team Membership**: If user is authenticated, queries GitHub API for team memberships
-3. **Team Filtering**: Passes user's teams to `getAllCopilotSeatsTeams()` for filtering
-4. **Dropdown Display**: Team dropdown shows only teams the user belongs to
+2. **GitHub Username Resolution**: If user is authenticated, resolves the actual GitHub username using multiple strategies:
+   - First checks for custom GitHub username claims (`github_username` or `extension_github_username`)
+   - If EntraID username looks like a GitHub username (no @ symbol), validates it exists on GitHub
+   - If an email is available, searches GitHub for users with that email
+   - Falls back to using the EntraID username as-is
+3. **Team Membership**: Queries GitHub API for team memberships using the resolved GitHub username
+4. **Team Filtering**: Passes user's teams to `getAllCopilotSeatsTeams()` for filtering
+5. **Dropdown Display**: Team dropdown shows only teams the user belongs to
+
+## Username Resolution
+
+The system handles scenarios where EntraID and GitHub usernames differ:
+
+### Strategy 1: Custom Claims
+If your EntraID configuration includes a custom claim for GitHub username:
+```json
+{
+  "claims": [
+    { "typ": "github_username", "val": "johnsmith123" },
+    { "typ": "preferred_username", "val": "john.smith@company.com" }
+  ]
+}
+```
+
+### Strategy 2: Email Lookup
+For users with public email addresses, the system searches GitHub:
+- EntraID email: `john.smith@company.com`
+- GitHub API search finds user with matching email
+- Returns GitHub username: `johnsmith123`
+
+### Strategy 3: Direct Validation
+If the EntraID username looks like a GitHub username (no @ symbol), it's validated on GitHub:
+- EntraID username: `johnsmith`
+- Validates user exists on GitHub
+- Uses username if valid
+
+### Strategy 4: Fallback
+As a last resort, uses the EntraID username directly:
+- Useful when usernames match or for debugging
 
 ## Scenarios
 

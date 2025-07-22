@@ -9,6 +9,17 @@ export interface UserInfo {
   isAuthenticated: boolean;
 }
 
+export interface UserPrincipalClaim {
+  typ: string;
+  val: string;
+}
+
+export interface GitHubUser {
+  login: string;
+  id: number;
+  email?: string;
+}
+
 export interface GitHubTeamMembership {
   id: number;
   name: string;
@@ -35,11 +46,22 @@ export const getCurrentUser = async (): Promise<ServerActionResponse<UserInfo>> 
         const decodedPrincipal = Buffer.from(clientPrincipal, "base64").toString("utf8");
         const userPrincipal: { userDetails?: string; claims?: UserPrincipalClaim[] } = JSON.parse(decodedPrincipal);
         
+        // Look for GitHub username in custom claim first
+        const githubUsernameClaim = userPrincipal.claims?.find((c: UserPrincipalClaim) => 
+          c.typ === "github_username" || c.typ === "extension_github_username"
+        )?.val;
+        
+        const entraUsername = userPrincipal.userDetails || 
+          userPrincipal.claims?.find((c: UserPrincipalClaim) => c.typ === "preferred_username")?.val || 
+          "unknown";
+        
+        const email = userPrincipal.claims?.find((c: UserPrincipalClaim) => c.typ === "email")?.val;
+
         return {
           status: "OK",
           response: {
-            username: userPrincipal.userDetails || userPrincipal.claims?.find((c: UserPrincipalClaim) => c.typ === "preferred_username")?.val || "unknown",
-            email: userPrincipal.claims?.find((c: UserPrincipalClaim) => c.typ === "email")?.val,
+            username: githubUsernameClaim || entraUsername,
+            email: email,
             isAuthenticated: true,
           },
         };
@@ -63,11 +85,133 @@ export const getCurrentUser = async (): Promise<ServerActionResponse<UserInfo>> 
 };
 
 /**
+ * Resolves the GitHub username from EntraID credentials using multiple strategies:
+ * 1. Use GitHub username if provided in custom claims
+ * 2. Look up GitHub user by email
+ * 3. Fall back to EntraID username as-is
+ */
+export const resolveGitHubUsername = async (
+  entraUsername: string,
+  email?: string
+): Promise<ServerActionResponse<string>> => {
+  // If the username looks like a valid GitHub username (no @ or spaces), try it first
+  if (entraUsername && !entraUsername.includes('@') && !entraUsername.includes(' ')) {
+    // Test if this username exists on GitHub
+    const testResult = await testGitHubUsername(entraUsername);
+    if (testResult.status === "OK" && testResult.response) {
+      return {
+        status: "OK",
+        response: entraUsername,
+      };
+    }
+  }
+
+  // If we have an email, try to find the GitHub user by email
+  if (email) {
+    const userByEmailResult = await findGitHubUserByEmail(email);
+    if (userByEmailResult.status === "OK" && userByEmailResult.response) {
+      return {
+        status: "OK",
+        response: userByEmailResult.response.login,
+      };
+    }
+  }
+
+  // Fall back to using the EntraID username as-is
+  return {
+    status: "OK",
+    response: entraUsername,
+  };
+};
+
+/**
+ * Tests if a GitHub username exists
+ */
+const testGitHubUsername = async (username: string): Promise<ServerActionResponse<boolean>> => {
+  const env = ensureGitHubEnvConfig();
+  if (env.status !== "OK") {
+    return { status: "OK", response: false };
+  }
+
+  const { token, version } = env.response;
+
+  try {
+    const response = await fetch(`https://api.github.com/users/${username}`, {
+      cache: "no-store",
+      headers: {
+        Accept: "application/vnd.github+json",
+        Authorization: `Bearer ${token}`,
+        "X-GitHub-Api-Version": version,
+      },
+    });
+
+    return {
+      status: "OK",
+      response: response.ok,
+    };
+  } catch (e) {
+    return {
+      status: "OK",
+      response: false,
+    };
+  }
+};
+
+/**
+ * Finds a GitHub user by email address
+ */
+const findGitHubUserByEmail = async (email: string): Promise<ServerActionResponse<GitHubUser | null>> => {
+  const env = ensureGitHubEnvConfig();
+  if (env.status !== "OK") {
+    return { status: "OK", response: null };
+  }
+
+  const { token, version } = env.response;
+
+  try {
+    // Search for users by email
+    const response = await fetch(`https://api.github.com/search/users?q=${encodeURIComponent(email)}+in:email`, {
+      cache: "no-store",
+      headers: {
+        Accept: "application/vnd.github+json",
+        Authorization: `Bearer ${token}`,
+        "X-GitHub-Api-Version": version,
+      },
+    });
+
+    if (!response.ok) {
+      return { status: "OK", response: null };
+    }
+
+    const searchResult = await response.json();
+    
+    // Return the first user found, if any
+    if (searchResult.items && searchResult.items.length > 0) {
+      return {
+        status: "OK",
+        response: searchResult.items[0],
+      };
+    }
+
+    return {
+      status: "OK",
+      response: null,
+    };
+  } catch (e) {
+    return {
+      status: "OK",
+      response: null,
+    };
+  }
+};
+
+/**
  * Gets GitHub team memberships for a user
  */
 export const getUserTeamMemberships = async (
   username: string,
-  organization: string
+  organization: string,
+  email?: string
 ): Promise<ServerActionResponse<GitHubTeamMembership[]>> => {
   if (!username) {
     return {
@@ -75,6 +219,14 @@ export const getUserTeamMemberships = async (
       response: [],
     };
   }
+
+  // Resolve the actual GitHub username
+  const resolvedUsernameResult = await resolveGitHubUsername(username, email);
+  if (resolvedUsernameResult.status !== "OK") {
+    return resolvedUsernameResult;
+  }
+  
+  const githubUsername = resolvedUsernameResult.response;
 
   const env = ensureGitHubEnvConfig();
   if (env.status !== "OK") {
@@ -116,7 +268,7 @@ export const getUserTeamMemberships = async (
     
     for (const team of allTeams) {
       try {
-        const membershipUrl = `https://api.github.com/orgs/${organization}/teams/${team.slug}/memberships/${username}`;
+        const membershipUrl = `https://api.github.com/orgs/${organization}/teams/${team.slug}/memberships/${githubUsername}`;
         const membershipResponse = await fetch(membershipUrl, {
           cache: "no-store",
           headers: {
@@ -154,7 +306,8 @@ export const getUserTeamMemberships = async (
  */
 export const getUserTeamMembershipsEnterprise = async (
   username: string,
-  enterprise: string
+  enterprise: string,
+  email?: string
 ): Promise<ServerActionResponse<GitHubTeamMembership[]>> => {
   if (!username) {
     return {
@@ -194,7 +347,7 @@ export const getUserTeamMembershipsEnterprise = async (
 
       // For each organization, get user's team memberships
       for (const org of organizations) {
-        const userTeamsResult = await getUserTeamMemberships(username, org.login);
+        const userTeamsResult = await getUserTeamMemberships(username, org.login, email);
         if (userTeamsResult.status === "OK") {
           allUserTeams.push(...userTeamsResult.response);
         }
