@@ -500,7 +500,8 @@ const aggregateSeatsData = (
 };
 
 export const getAllCopilotSeatsTeams = async (
-  filter: IFilter
+  filter: IFilter,
+  userTeamFilter?: string[]
 ): Promise<ServerActionResponse<GitHubTeam[]>> => {
   const env = ensureGitHubEnvConfig();
   const isCosmosConfig = cosmosConfiguration();
@@ -524,6 +525,9 @@ export const getAllCopilotSeatsTeams = async (
         }
         break;
     }
+    
+    let allTeams: GitHubTeam[];
+    
     if (isCosmosConfig) {
       const dbResult = await getAllCopilotSeatsTeamsFromDatabase(filter);
       if (dbResult.status !== "OK" || !dbResult.response) {
@@ -532,21 +536,29 @@ export const getAllCopilotSeatsTeams = async (
           errors: [{ message: "No data found" }],
         };
       }
-      return {
-        status: "OK",
-        response: dbResult.response,
-      };
+      allTeams = dbResult.response;
+    } else {
+      const apiResult = await getAllCopilotSeatsTeamsFromApi(filter);
+      if (apiResult.status !== "OK" || !apiResult.response) {
+        return {
+          status: "ERROR",
+          errors: [{ message: "No data found" }],
+        };
+      }
+      allTeams = apiResult.response;
     }
-    const apiResult = await getAllCopilotSeatsTeamsFromApi(filter);
-    if (apiResult.status !== "OK" || !apiResult.response) {
-      return {
-        status: "ERROR",
-        errors: [{ message: "No data found" }],
-      };
+
+    // Filter teams based on user membership if provided
+    let filteredTeams = allTeams;
+    if (userTeamFilter && userTeamFilter.length > 0) {
+      filteredTeams = allTeams.filter(team => 
+        userTeamFilter.includes(team.name) || userTeamFilter.includes(team.slug || "")
+      );
     }
+
     return {
       status: "OK",
-      response: apiResult.response,
+      response: filteredTeams,
     };
   } catch (e) {
     return unknownResponseError(e);

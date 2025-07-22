@@ -13,7 +13,9 @@ import { TimeFrameToggle } from "./filter/time-frame-toggle";
 import { Header } from "./header";
 import { getCopilotMetrics, IFilter as MetricsFilter } from "@/services/copilot-metrics-service";
 import { getCopilotSeatsManagement, getAllCopilotSeatsTeams, IFilter as SeatServiceFilter } from "@/services/copilot-seat-service";
+import { getCurrentUser, getUserTeamMemberships, getUserTeamMembershipsEnterprise } from "@/services/user-service";
 import { cosmosConfiguration } from "@/services/cosmos-db-service";
+import { ensureGitHubEnvConfig } from "@/services/env-service";
 
 export interface IProps {
   searchParams: MetricsFilter;
@@ -22,13 +24,38 @@ export interface IProps {
 export default async function Dashboard(props: IProps) {
   const metricsFilter = props.searchParams;
 
+  // Get current user information
+  const userResult = await getCurrentUser();
+  let userTeamNames: string[] = [];
+
+  if (userResult.status === "OK" && userResult.response.isAuthenticated && userResult.response.username) {
+    // Get GitHub environment configuration
+    const env = ensureGitHubEnvConfig();
+    if (env.status === "OK") {
+      const { enterprise, organization } = env.response;
+      
+      // Get user's team memberships based on API scope
+      let userTeamsResult;
+      if (process.env.GITHUB_API_SCOPE === "enterprise") {
+        userTeamsResult = await getUserTeamMembershipsEnterprise(userResult.response.username, enterprise);
+      } else {
+        userTeamsResult = await getUserTeamMemberships(userResult.response.username, organization);
+      }
+
+      if (userTeamsResult.status === "OK") {
+        userTeamNames = userTeamsResult.response.map(team => team.name);
+      }
+    }
+  }
+
   const metricsPromise = getCopilotMetrics(metricsFilter);
   const seatsPromise = getCopilotSeatsManagement({
     date: props.searchParams.endDate,
   } as SeatServiceFilter);
   const teamsPromise = getAllCopilotSeatsTeams({
     date: props.searchParams.endDate,
-  } as SeatServiceFilter);
+  } as SeatServiceFilter, userTeamNames.length > 0 ? userTeamNames : undefined);
+  
   const [metrics, seats, teams] = await Promise.all([
     metricsPromise,
     seatsPromise,
