@@ -37,9 +37,9 @@ export default async function Dashboard(props: IProps) {
       // Get user's team memberships based on API scope
       let userTeamsResult;
       if (process.env.GITHUB_API_SCOPE === "enterprise") {
-        userTeamsResult = await getUserTeamMembershipsEnterprise(userResult.response.username, enterprise, userResult.response.email);
+        userTeamsResult = await getUserTeamMembershipsEnterprise(userResult.response.username, enterprise, userResult.response.email, userResult.response.nameId);
       } else {
-        userTeamsResult = await getUserTeamMemberships(userResult.response.username, organization, userResult.response.email);
+        userTeamsResult = await getUserTeamMemberships(userResult.response.username, organization, userResult.response.email, userResult.response.nameId);
       }
 
       if (userTeamsResult.status === "OK") {

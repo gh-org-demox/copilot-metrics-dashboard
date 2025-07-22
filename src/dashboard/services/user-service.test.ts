@@ -70,7 +70,7 @@ describe("getCurrentUser", () => {
     const userPrincipal = {
       userDetails: "john.smith@company.com",
       claims: [
-        { typ: "email", val: "john.smith@company.com" },
+        { typ: "email", val: "test@example.com" },
         { typ: "preferred_username", val: "john.smith@company.com" },
         { typ: "github_username", val: "johnsmith123" },
       ],
@@ -87,7 +87,7 @@ describe("getCurrentUser", () => {
     expect(result.status).toBe("OK");
     if (result.status === "OK") {
       expect(result.response.isAuthenticated).toBe(true);
-      expect(result.response.username).toBe("testuser");
+      expect(result.response.username).toBe("johnsmith123");
       expect(result.response.email).toBe("test@example.com");
     }
   });
@@ -112,15 +112,22 @@ describe("getUserTeamMemberships", () => {
     const mockMembership = { state: "active" };
 
     (global.fetch as any)
+      // Mock username validation (testGitHubUsername)
+      .mockResolvedValueOnce({
+        ok: true,
+      })
+      // Mock teams list
       .mockResolvedValueOnce({
         ok: true,
         json: () => Promise.resolve(mockTeams),
         headers: { get: () => null },
       })
+      // Mock membership check for team1
       .mockResolvedValueOnce({
         ok: true,
         json: () => Promise.resolve(mockMembership),
       })
+      // Mock membership check for team2 
       .mockResolvedValueOnce({
         ok: false, // Not a member of team2
       });

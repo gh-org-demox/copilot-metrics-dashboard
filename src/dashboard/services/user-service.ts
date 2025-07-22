@@ -6,6 +6,7 @@ import { ensureGitHubEnvConfig } from "./env-service";
 export interface UserInfo {
   username: string;
   email?: string;
+  nameId?: string;
   isAuthenticated: boolean;
 }
 
@@ -28,6 +29,117 @@ export interface GitHubTeamMembership {
     login: string;
   };
 }
+
+export interface SamlIdentityMapping {
+  user: {
+    id: string;
+    login: string;
+    name: string;
+    email: string;
+  };
+  samlIdentity: {
+    nameId: string;
+  };
+}
+
+/**
+ * Gets SAML identity mappings from GitHub organization using GraphQL
+ */
+const getSamlIdentityMappings = async (organization: string): Promise<ServerActionResponse<SamlIdentityMapping[]>> => {
+  const env = ensureGitHubEnvConfig();
+  if (env.status !== "OK") {
+    return env;
+  }
+
+  const { token, version } = env.response;
+
+  const query = `
+    query($org: String!, $continuationToken: String) {
+      organization(login: $org) {
+        samlIdentityProvider {
+          id
+          ssoUrl
+          issuer
+          externalIdentities(first: 100, after: $continuationToken) {
+            totalCount
+            pageInfo {
+              hasNextPage
+              endCursor
+            }
+            edges {
+              node {
+                user {
+                  id
+                  login
+                  name
+                  email
+                }
+                samlIdentity {
+                  nameId
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  `;
+
+  try {
+    let allIdentities: SamlIdentityMapping[] = [];
+    let continuationToken: string | null = null;
+    let hasNextPage = true;
+
+    while (hasNextPage) {
+      const variables: { org: string; continuationToken: string | null } = {
+        org: organization,
+        continuationToken,
+      };
+
+      const response: Response = await fetch('https://api.github.com/graphql', {
+        method: 'POST',
+        cache: "no-store",
+        headers: {
+          'Accept': 'application/vnd.github+json',
+          'Authorization': `Bearer ${token}`,
+          'X-GitHub-Api-Version': version,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ query, variables }),
+      });
+
+      if (!response.ok) {
+        return formatResponseError(organization, response);
+      }
+
+      const result: any = await response.json();
+      
+      if (result.errors) {
+        console.warn('GraphQL errors:', result.errors);
+        return {
+          status: "ERROR",
+          errors: [{ message: `GraphQL query failed: ${result.errors[0]?.message || 'Unknown error'}` }],
+        };
+      }
+
+      const externalIdentities: any = result.data?.organization?.samlIdentityProvider?.externalIdentities;
+      if (externalIdentities?.edges) {
+        const identities = externalIdentities.edges.map((edge: any) => edge.node);
+        allIdentities.push(...identities);
+      }
+
+      hasNextPage = externalIdentities?.pageInfo?.hasNextPage || false;
+      continuationToken = externalIdentities?.pageInfo?.endCursor || null;
+    }
+
+    return {
+      status: "OK",
+      response: allIdentities,
+    };
+  } catch (e) {
+    return unknownResponseError(e);
+  }
+};
 
 /**
  * Gets current user information from Azure App Service authentication headers
@@ -57,17 +169,23 @@ export const getCurrentUser = async (): Promise<ServerActionResponse<UserInfo>> 
         
         const email = userPrincipal.claims?.find((c: UserPrincipalClaim) => c.typ === "email")?.val;
 
+        // Extract SAML nameId if available
+        const nameId = userPrincipal.claims?.find((c: UserPrincipalClaim) => 
+          c.typ === "nameidentifier" || c.typ === "http://schemas.xmlsoap.org/ws/2005/05/identity/claims/nameidentifier"
+        )?.val;
+
         return {
           status: "OK",
           response: {
             username: githubUsernameClaim || entraUsername,
             email: email,
+            nameId: nameId,
             isAuthenticated: true,
           },
         };
       } catch (e) {
         // If we can't parse the principal, fall back to unauthenticated
-        console.warn("Failed to parse X-MS-CLIENT-PRINCIPAL header:", formatResponseError(e));
+        console.warn("Failed to parse X-MS-CLIENT-PRINCIPAL header:", e instanceof Error ? e.message : 'Unknown error');
       }
     }
     
@@ -87,14 +205,16 @@ export const getCurrentUser = async (): Promise<ServerActionResponse<UserInfo>> 
 /**
  * Resolves the GitHub username from EntraID credentials using multiple strategies:
  * 1. Use GitHub username if provided in custom claims
- * 2. Look up GitHub user by email
- * 3. Fall back to EntraID username as-is
+ * 2. Look up GitHub user via SAML identity mapping (GraphQL)
+ * 3. Look up GitHub user by email
+ * 4. Fall back to EntraID username as-is
  */
 export const resolveGitHubUsername = async (
   entraUsername: string,
-  email?: string
+  email?: string,
+  nameId?: string
 ): Promise<ServerActionResponse<string>> => {
-  // If the username looks like a valid GitHub username (no @ or spaces), try it first
+  // Strategy 1: Use custom GitHub username claim if available
   if (entraUsername && !entraUsername.includes('@') && !entraUsername.includes(' ')) {
     // Test if this username exists on GitHub
     const testResult = await testGitHubUsername(entraUsername);
@@ -106,7 +226,29 @@ export const resolveGitHubUsername = async (
     }
   }
 
-  // If we have an email, try to find the GitHub user by email
+  // Strategy 2: Use SAML identity mapping via GraphQL (primary method for SAML environments)
+  if (nameId) {
+    const env = ensureGitHubEnvConfig();
+    if (env.status === "OK") {
+      const { organization } = env.response;
+      const samlMappingResult = await getSamlIdentityMappings(organization);
+      
+      if (samlMappingResult.status === "OK") {
+        const mapping = samlMappingResult.response.find(
+          identity => identity.samlIdentity.nameId === nameId
+        );
+        
+        if (mapping) {
+          return {
+            status: "OK",
+            response: mapping.user.login,
+          };
+        }
+      }
+    }
+  }
+
+  // Strategy 3: If we have an email, try to find the GitHub user by email
   if (email) {
     const userByEmailResult = await findGitHubUserByEmail(email);
     if (userByEmailResult.status === "OK" && userByEmailResult.response) {
@@ -117,7 +259,7 @@ export const resolveGitHubUsername = async (
     }
   }
 
-  // Fall back to using the EntraID username as-is
+  // Strategy 4: Fall back to using the EntraID username as-is
   return {
     status: "OK",
     response: entraUsername,
@@ -211,7 +353,8 @@ const findGitHubUserByEmail = async (email: string): Promise<ServerActionRespons
 export const getUserTeamMemberships = async (
   username: string,
   organization: string,
-  email?: string
+  email?: string,
+  nameId?: string
 ): Promise<ServerActionResponse<GitHubTeamMembership[]>> => {
   if (!username) {
     return {
@@ -221,7 +364,7 @@ export const getUserTeamMemberships = async (
   }
 
   // Resolve the actual GitHub username
-  const resolvedUsernameResult = await resolveGitHubUsername(username, email);
+  const resolvedUsernameResult = await resolveGitHubUsername(username, email, nameId);
   if (resolvedUsernameResult.status !== "OK") {
     return resolvedUsernameResult;
   }
@@ -256,7 +399,9 @@ export const getUserTeamMemberships = async (
       }
 
       const teams = await response.json();
-      allTeams.push(...teams);
+      if (Array.isArray(teams)) {
+        allTeams.push(...teams);
+      }
 
       // Check for pagination
       const linkHeader = response.headers.get("Link");
@@ -288,7 +433,7 @@ export const getUserTeamMemberships = async (
         // 404 means no membership, which is expected for teams the user isn't in
       } catch (e) {
         // Continue checking other teams if one fails
-        console.warn(`Failed to check membership for team ${team.slug}: ${e.message}`);
+        console.warn(`Failed to check membership for team ${team.slug}: ${e instanceof Error ? e.message : 'Unknown error'}`);
       }
     }
 
@@ -307,7 +452,8 @@ export const getUserTeamMemberships = async (
 export const getUserTeamMembershipsEnterprise = async (
   username: string,
   enterprise: string,
-  email?: string
+  email?: string,
+  nameId?: string
 ): Promise<ServerActionResponse<GitHubTeamMembership[]>> => {
   if (!username) {
     return {
@@ -347,7 +493,7 @@ export const getUserTeamMembershipsEnterprise = async (
 
       // For each organization, get user's team memberships
       for (const org of organizations) {
-        const userTeamsResult = await getUserTeamMemberships(username, org.login, email);
+        const userTeamsResult = await getUserTeamMemberships(username, org.login, email, nameId);
         if (userTeamsResult.status === "OK") {
           allUserTeams.push(...userTeamsResult.response);
         }
