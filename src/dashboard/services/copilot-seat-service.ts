@@ -551,8 +551,9 @@ export const getAllCopilotSeatsTeams = async (
     // Filter teams based on user membership if provided
     let filteredTeams = allTeams;
     if (userTeamFilter && userTeamFilter.length > 0) {
+      const userTeamFilterSet = new Set(userTeamFilter);
       filteredTeams = allTeams.filter(team => 
-        userTeamFilter.includes(team.name) || userTeamFilter.includes(team.slug || "")
+        userTeamFilterSet.has(team.name) || userTeamFilterSet.has(team.slug || "")
       );
     }
 
