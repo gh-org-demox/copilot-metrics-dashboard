@@ -33,8 +33,10 @@ describe("getCurrentUser", () => {
     const result = await getCurrentUser();
 
     expect(result.status).toBe("OK");
-    expect(result.response.isAuthenticated).toBe(false);
-    expect(result.response.username).toBe("");
+    if (result.status === "OK") {
+      expect(result.response.isAuthenticated).toBe(false);
+      expect(result.response.username).toBe("");
+    }
   });
 
   it("returns authenticated user when X-MS-CLIENT-PRINCIPAL header is present", async () => {
@@ -56,9 +58,11 @@ describe("getCurrentUser", () => {
     const result = await getCurrentUser();
 
     expect(result.status).toBe("OK");
-    expect(result.response.isAuthenticated).toBe(true);
-    expect(result.response.username).toBe("testuser");
-    expect(result.response.email).toBe("test@example.com");
+    if (result.status === "OK") {
+      expect(result.response.isAuthenticated).toBe(true);
+      expect(result.response.username).toBe("testuser");
+      expect(result.response.email).toBe("test@example.com");
+    }
   });
 });
 
@@ -67,7 +71,9 @@ describe("getUserTeamMemberships", () => {
     const result = await getUserTeamMemberships("", "test-org");
 
     expect(result.status).toBe("OK");
-    expect(result.response).toEqual([]);
+    if (result.status === "OK") {
+      expect(result.response).toEqual([]);
+    }
   });
 
   it("returns user teams when username is provided", async () => {
@@ -95,7 +101,9 @@ describe("getUserTeamMemberships", () => {
     const result = await getUserTeamMemberships("testuser", "test-org");
 
     expect(result.status).toBe("OK");
-    expect(result.response).toHaveLength(1);
-    expect(result.response[0].name).toBe("team1");
+    if (result.status === "OK") {
+      expect(result.response).toHaveLength(1);
+      expect(result.response[0].name).toBe("team1");
+    }
   });
 });
